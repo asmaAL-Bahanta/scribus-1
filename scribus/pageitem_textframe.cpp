@@ -1433,10 +1433,13 @@ QList<GlyphRun> PageItem_TextFrame::shapeText()
 
 		CharStyle cs = itemText.charStyle(textMap.value(textRun.start));
 		FT_Set_Char_Size(cs.font().ftFace(), cs.fontSize(), 0, 72, 0);
+		QString lang = cs.language();
+		hb_language_t language = hb_language_from_string (lang.toStdString().c_str(), lang.toStdString().length());
 
 		// TODO: move to ScFace
 		hb_font_t *hbFont = hb_ft_font_create_referenced(cs.font().ftFace());
 		hb_buffer_t *hbBuffer = hb_buffer_create();
+		hb_buffer_set_language(hbBuffer, language);
 
 		hb_buffer_clear_contents(hbBuffer);
 		hb_buffer_add_utf32(hbBuffer, ucs4.data(), ucs4.length(), textRun.start, textRun.len);
@@ -1507,6 +1510,7 @@ QList<GlyphRun> PageItem_TextFrame::shapeText()
 
 			gl.scaleH = charStyle.scaleH() / 1000.0;
 			gl.scaleV = charStyle.scaleV() / 1000.0;
+
 
 			if (gl.yadvance <= 0)
 				gl.yadvance = charStyle.font().glyphBBox(gl.glyph, charStyle.fontSize() / 10).ascent * gl.scaleV;
@@ -1726,8 +1730,7 @@ void PageItem_TextFrame::layout()
 		double autoLeftIndent = 0.0;
 		for (int i = 0; i < glyphRuns.length(); ++i)
 		{
-			GlyphRun& run = glyphRuns[i];
-			if (run.glyphs().isEmpty())
+			if (glyphRuns[i].glyphs().isEmpty())
 				continue;
 
 			int a = glyphRuns[i].firstChar();
@@ -2904,8 +2907,11 @@ void PageItem_TextFrame::layout()
 						{
 							if (itemText.text(a) != '-')
 								current.hyphenCount = 0;
-							glyphRuns[i].clearFlag(ScLayout_SoftHyphenVisible);
-							glyphRuns[i].glyphs().removeLast();
+							if (glyphRuns[i].hasFlag(ScLayout_SoftHyphenVisible))
+							{
+								glyphRuns[i].clearFlag(ScLayout_SoftHyphenVisible);
+								glyphRuns[i].glyphs().removeLast();
+							}
 						}
 
 						// Justification
