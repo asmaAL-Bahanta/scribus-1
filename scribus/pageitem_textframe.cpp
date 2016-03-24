@@ -430,12 +430,23 @@ struct LineSpec
 	qreal height;
 };
 
+struct glyphRunsVisualOrder : std::binary_function<GlyphRun,GlyphRun,bool>{
+	glyphRunsVisualOrder(QMap<int, int>& glyphMap): m_glyphMap( glyphMap ) {}
+	bool operator()( const GlyphRun &r1, const GlyphRun &r2 )
+		{
+			return m_glyphMap[r1.firstChar()] < m_glyphMap[r2.firstChar()];
+		}
+private:
+	QMap<int, int>& m_glyphMap;
+};
+
 /**
 fields which describe how the current line is placed into the frame
 */
 struct LineControl {
 	LineSpec line;
 	QList<GlyphRun>& glyphRuns;
+	QMap<int, int>& glyphMap;
 	bool     isEmpty;
 	int      hyphenCount;
 	double   colWidth;
@@ -472,10 +483,11 @@ struct LineControl {
 	ScribusDoc *doc;
 
 	/// remember frame dimensions and offsets
-	LineControl(double w, double h, const MarginStruct& extra, double lCorr, ScribusDoc* d, QList<GlyphRun>& runs, double colwidth, double colgap)
+	LineControl(double w, double h, const MarginStruct& extra, double lCorr, ScribusDoc* d, QList<GlyphRun>& runs, double colwidth, double colgap, QMap<int, int>& logicalRuns)
 		: glyphRuns(runs)
 		, hasDropCap(false)
 		, doc(d)
+		, glyphMap(logicalRuns)
 	{
 		insets = extra;
 		lineCorr = lCorr;
@@ -772,33 +784,17 @@ struct LineControl {
 		result->setWidth(line.width);
 		result->setAscent(line.ascent);
 		result->setDescent(line.descent);
-
+		QList<GlyphRun> SubRun;
 		for (int i = line.firstRun; i <= line.lastRun; ++i)
+			SubRun.append(glyphRuns.at(i));
+		std::sort(SubRun.begin(), SubRun.end(),glyphRunsVisualOrder(glyphMap));
+		foreach(const GlyphRun& run, SubRun)
 		{
-			if (glyphRuns.at(i).rtl())
-			{
-				// Find successive RTL runs and insert them in reverse order
-				int rtlCount = 0;
-				for (int j = i; j <= line.lastRun; j++)
-				{
-					if (glyphRuns.at(j).rtl())
-						rtlCount++;
-					else
-						break;
-				}
-				for (int j = rtlCount - 1; j >= 0; j--)
-					addBox(result, glyphRuns.at(i + j));
-				i += rtlCount - 1;
-			}
-			else
-			{
-				addBox(result, glyphRuns.at(i));
-			}
+			addBox(result,run);
 		}
 
 		return result;
 	}
-
 	void addBox(LineBox *lineBox, const GlyphRun& run)
 	{
 		Box* result;
@@ -1316,11 +1312,18 @@ QList<PageItem_TextFrame::TextRun> PageItem_TextFrame::itemizeStyles(QList<TextR
 	return newRuns;
 }
 
-QList<GlyphRun> PageItem_TextFrame::shapeText()
+static bool glyphRunsComparison(const GlyphRun &r1, const GlyphRun &r2)
+{
+	return r1.firstChar() < r2.firstChar();
+}
+
+void PageItem_TextFrame::shapeText(QMap<int, int>& glyphMap, QList<GlyphRun>& glyphRuns)
 {
 	// maps expanded characters to itemText tokens.
 	QMap<int, int> textMap;
 	QString text;
+	glyphRuns.clear();
+	glyphMap.clear();
 	for (int i = firstInFrame(); i < itemText.length(); ++i)
 	{
 		Mark* mark = itemText.mark(i);
@@ -1426,8 +1429,6 @@ QList<GlyphRun> PageItem_TextFrame::shapeText()
 	QList<TextRun> bidiRuns = itemizeBiDi(text);
 	QList<TextRun> textRuns = itemizeStyles(bidiRuns, textMap);
 
-	QList<GlyphRun> glyphRuns;
-
 	foreach (TextRun textRun, textRuns) {
 		QVector<uint> ucs4 = text.toUcs4();
 
@@ -1449,10 +1450,6 @@ QList<GlyphRun> PageItem_TextFrame::shapeText()
 
 		hb_shape(hbFont, hbBuffer, NULL, 0);
 
-		// Reverse RTL runs for line breaking as well as code that assumes increasing character order
-		if (textRun.dir == UBIDI_RTL)
-			hb_buffer_reverse(hbBuffer);
-
 		unsigned int count = hb_buffer_get_length(hbBuffer);
 		hb_glyph_info_t *glyphs = hb_buffer_get_glyph_infos(hbBuffer, NULL);
 		hb_glyph_position_t *positions = hb_buffer_get_glyph_positions(hbBuffer, NULL);
@@ -1461,16 +1458,17 @@ QList<GlyphRun> PageItem_TextFrame::shapeText()
 		for (size_t i = 0; i < count; i++)
 		{
 			uint32_t firstCluster = glyphs[i].cluster;
-			uint32_t nextCluster = firstCluster;
-			for (size_t j = i + 1; j < count && nextCluster == firstCluster; j++)
-				nextCluster = glyphs[j].cluster;
-			if (nextCluster == firstCluster)
-				nextCluster = textRun.start + textRun.len;
+//			uint32_t nextCluster = firstCluster;
+//			for (size_t j = i + 1; j < count && nextCluster == firstCluster; j++)
+//				nextCluster = glyphs[j].cluster;
+//			if (nextCluster == firstCluster)
+//				nextCluster = textRun.start + textRun.len;
 
 			assert(textMap.contains(firstCluster));
-			assert(textMap.contains(nextCluster - 1));
+//			assert(textMap.contains(nextCluster - 1));
 			int firstChar = textMap.value(firstCluster);
-			int lastChar = textMap.value(nextCluster - 1);
+			int lastChar = firstChar;
+//			int lastChar = textMap.value(nextCluster - 1);
 
 			QChar ch = itemText.text(firstChar);
 			LayoutFlags flags = itemText.flags(firstChar);
@@ -1528,7 +1526,11 @@ QList<GlyphRun> PageItem_TextFrame::shapeText()
 		}
 	}
 
-	return glyphRuns;
+
+	for (int r = 0; r < glyphRuns.length(); r++)
+		glyphMap.insert(glyphRuns[r].firstChar(), r);
+	qSort(glyphRuns.begin(), glyphRuns.end(),glyphRunsComparison);
+
 }
 
 void PageItem_TextFrame::layout()
@@ -1666,10 +1668,11 @@ void PageItem_TextFrame::layout()
 			}
 			m_availableRegion = matrix.map(m_availableRegion);
 		}
+		QMap<int, int> glyphMap;
+		QList<GlyphRun> glyphRuns;
+		shapeText(glyphMap, glyphRuns);
 
-		QList<GlyphRun> glyphRuns = shapeText();
-
-		LineControl current(m_width, m_height, m_textDistanceMargins, lineCorr, m_Doc, glyphRuns, columnWidth(), ColGap);
+		LineControl current(m_width, m_height, m_textDistanceMargins, lineCorr, m_Doc, glyphRuns, columnWidth(), ColGap, glyphMap);
 		current.nextColumn(textLayout);
 
 		lastLineY = m_textDistanceMargins.top();

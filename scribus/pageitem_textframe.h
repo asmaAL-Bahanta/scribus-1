@@ -170,7 +170,8 @@ private:
 		int len;
 		int dir;
 	};
-	QList<GlyphRun> shapeText();
+	void shapeText(QMap<int, int> &glyphMap, QList<GlyphRun> &glyphRuns);
+	void setGlyphMap(QMap<int, int>& other);
 	QList<TextRun> itemizeBiDi(QString text);
 	QList<TextRun> itemizeStyles(QList<TextRun> runs, QMap<int, int> textMap);
 };
